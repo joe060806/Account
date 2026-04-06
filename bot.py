@@ -2,18 +2,42 @@ import discord
 import json
 import os
 from datetime import datetime
+from flask import Flask
+from threading import Thread
 
-from account import add_transaction, calculate_balance, settle_debts
+# 如果您有 account.py，請保留這行；如果沒有，請註解掉
+# from account import add_transaction, calculate_balance, settle_debts
 
+# 從 Render 環境變數讀取 TOKEN
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 FILE = "data.json"
 
 # =========================
+# Flask 保活伺服器 (解決 Render Port 偵測問題)
+# =========================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_flask():
+    # 讀取 Render 分配的 PORT，預設為 10000
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
+
+# 啟動 Flask 伺服器
+keep_alive()
+
+# =========================
 # 資料處理工具
 # =========================
 def load_data():
-    """讀取 JSON 資料檔"""
     if not os.path.exists(FILE):
         return {"transactions": [], "next_id": 1}
     try:
@@ -23,7 +47,6 @@ def load_data():
         return {"transactions": [], "next_id": 1}
 
 def save_data(data):
-    """儲存資料到 JSON 檔"""
     with open(FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
@@ -31,8 +54,8 @@ def save_data(data):
 # Discord 機器人設定
 # =========================
 intents = discord.Intents.default()
-intents.message_content = True  # 必須在 Developer Portal 開啟對應開關
-intents.members = True          # 建議也開啟成員意圖
+intents.message_content = True 
+intents.members = True          
 
 client = discord.Client(intents=intents)
 
@@ -42,16 +65,12 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    # 排除機器人自己的訊息
     if message.author == client.user:
         return
 
     content = message.content.strip()
 
-    # =========================
-    # 指令：!add [金額] [描述] [姓名] [欠金額] ...
-    # 範例：!add 200 晚餐 joe 欠120
-    # =========================
+    # !add 指令
     if content.startswith("!add"):
         try:
             parts = content.split()
@@ -65,7 +84,6 @@ async def on_message(message):
             splits = {}
             current_name = None
 
-            # 解析人名與欠款 (支援 "joe 欠120" 或 "joe欠120")
             for item in debt_info:
                 if "欠" in item:
                     if item.startswith("欠"):
@@ -78,7 +96,6 @@ async def on_message(message):
                 else:
                     current_name = item
 
-            # 如果沒寫「欠」，則視為所有提到的人平分
             if not splits:
                 people = [p for p in debt_info if p != "欠"]
                 if people:
@@ -86,13 +103,11 @@ async def on_message(message):
                     for p in people:
                         splits[p] = share
 
-            # 取得目前時間
             now = datetime.now().strftime("%Y/%m/%d %H:%M")
-
             data = load_data()
             new_t = {
                 "id": data["next_id"],
-                "payer": message.author.name, # 儲存發送者的純文字名字
+                "payer": message.author.name,
                 "amount": amount,
                 "splits": splits,
                 "desc": desc,
@@ -102,104 +117,56 @@ async def on_message(message):
             data["transactions"].append(new_t)
             data["next_id"] += 1
             save_data(data)
-
             await message.channel.send(f"✅ 已幫 **{message.author.name}** 記下「{desc}」！")
-
         except Exception as e:
-            print(f"新增錯誤: {e}")
-            await message.channel.send("❌ 格式錯誤！範例：`!add 200 晚餐 joe 欠120` 或 `!add 200 晚餐 joe bob` (平分)")
+            await message.channel.send(f"❌ 錯誤: {e}")
 
-    # =========================
-    # 指令：!list（列出所有交易）
-    # =========================
+    # !list 指令
     elif content.startswith("!list"):
         data = load_data()
         transactions = data.get("transactions", [])
-
         if not transactions:
             await message.channel.send("📭 沒有任何交易紀錄")
             return
-
         msg = "📜 **所有交易紀錄：**\n"
-
         for t in transactions:
-            tid = t["id"]
-            time_val = t.get("time", "")
-            desc_val = t.get("desc", "")
-            payer_val = t.get("payer", "")
-            splits_val = t.get("splits", {})
-
-            msg += f"\n🔹 ID:{tid} │ {time_val} │ {desc_val}\n"
-            msg += f"👤 {payer_val} 付款\n"
-
-            for name, amt in splits_val.items():
-                if name != payer_val:
+            msg += f"\n🔹 ID:{t['id']} │ {t.get('time','')} │ {t.get('desc','')}\n👤 {t.get('payer','')} 付款\n"
+            for name, amt in t.get("splits", {}).items():
+                if name != t.get('payer',''):
                     msg += f"   └─ {name} 欠 {amt}\n"
-
         await message.channel.send(msg)
 
-    # =========================
-    # 指令：!delete [ID]
-    # =========================
+    # !delete 指令
     elif content.startswith("!delete"):
         try:
-            parts = content.split()
-            if len(parts) != 2:
-                raise ValueError("格式錯誤")
-
-            delete_id = int(parts[1])
-
+            delete_id = int(content.split()[1])
             data = load_data()
-            transactions = data.get("transactions", [])
-
-            new_transactions = [t for t in transactions if t["id"] != delete_id]
-
-            if len(new_transactions) == len(transactions):
-                await message.channel.send("❌ 找不到這筆交易 ID")
-                return
-
-            data["transactions"] = new_transactions
-            save_data(data)
-
-            await message.channel.send(f"🗑️ 已刪除 ID:{delete_id}")
-
+            old_len = len(data["transactions"])
+            data["transactions"] = [t for t in data["transactions"] if t["id"] != delete_id]
+            if len(data["transactions"]) == old_len:
+                await message.channel.send("❌ 找不到該 ID")
+            else:
+                save_data(data)
+                await message.channel.send(f"🗑️ 已刪除 ID:{delete_id}")
         except:
-            await message.channel.send("❌ 格式錯誤：!delete 1")
+            await message.channel.send("❌ 請輸入正確 ID，例如：`!delete 1`")
 
-    # =========================
-    # 指令：!settle (查看所有債務關係)
-    # =========================
+    # !settle 指令
     elif content.startswith("!settle"):
         data = load_data()
         transactions = data.get("transactions", [])
-
         if not transactions:
-            await message.channel.send("🎉 目前沒有任何記帳紀錄喔！")
+            await message.channel.send("🎉 目前沒有任何紀錄喔！")
             return
-
         msg = "💰 **目前的債務關係：**\n"
-        
         for t in transactions:
-            time_val = t.get("time", "未知時間")
-            desc_val = t.get("desc", "無描述")
-            payer_val = t.get("payer", "未知付款人")
-            splits_val = t.get("splits", {})
-
-            # 組合單筆交易的標頭
-            transaction_header = f"\n **{time_val}** │ **{desc_val}**\n"
-            debt_lines = ""
-
-            for name, amt in splits_val.items():
-                # 只有當欠錢的人不是付款人時才顯示
-                if str(name) != str(payer_val):
-                    debt_lines += f"└─ {name} 欠 {amt} → {payer_val}\n"
-            
-            # 如果這筆交易真的有債務產生，才加入總訊息
-            if debt_lines:
-                msg += transaction_header + debt_lines
-
-        # 若訊息太長可能會被 Discord 截斷，這裡一次發送
+            header = f"\n**{t.get('time','')}** │ **{t.get('desc','')}**\n"
+            lines = "".join([f"└─ {n} 欠 {a} → {t['payer']}\n" for n, a in t.get("splits",{}).items() if str(n) != str(t['payer'])])
+            if lines: msg += header + lines
         await message.channel.send(msg)
 
 # 啟動機器人
-client.run(TOKEN)
+if TOKEN:
+    client.run(TOKEN)
+else:
+    print("❌ 錯誤：找不到 DISCORD_TOKEN 環境變數")
