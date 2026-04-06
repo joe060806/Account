@@ -179,11 +179,7 @@ async def on_message(message):
         await message.channel.send(msg)
 
 # 啟動機器人
-<<<<<<< HEAD
 if TOKEN:
     client.run(TOKEN)
 else:
     print("❌ 錯誤：找不到 DISCORD_TOKEN 環境變數")
-=======
-client.run(TOKEN)
->>>>>>> 21c6152cba7b4d9b1beeb3e208e9db2795de5335
