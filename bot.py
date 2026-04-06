@@ -2,12 +2,27 @@ import discord
 import json
 import os
 from datetime import datetime
+from flask import Flask
+from threading import Thread
 
 from account import add_transaction, calculate_balance, settle_debts
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 FILE = "data.json"
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    # Render 預設使用 10000 埠口
+    app.run(host='0.0.0.0', port=10000)
+
+# 啟動一個背景執行緒跑網頁，這樣不會卡住 Discord 機器人
+Thread(target=run).start()
 
 # =========================
 # 資料處理工具
