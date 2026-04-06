@@ -13,6 +13,19 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 FILE = "data.json"
 
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    # Render 預設使用 10000 埠口
+    app.run(host='0.0.0.0', port=10000)
+
+# 啟動一個背景執行緒跑網頁，這樣不會卡住 Discord 機器人
+Thread(target=run).start()
+
 # =========================
 # Flask 保活伺服器 (解決 Render Port 偵測問題)
 # =========================
@@ -166,7 +179,11 @@ async def on_message(message):
         await message.channel.send(msg)
 
 # 啟動機器人
+<<<<<<< HEAD
 if TOKEN:
     client.run(TOKEN)
 else:
     print("❌ 錯誤：找不到 DISCORD_TOKEN 環境變數")
+=======
+client.run(TOKEN)
+>>>>>>> 21c6152cba7b4d9b1beeb3e208e9db2795de5335

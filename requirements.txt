@@ -1,2 +1,6 @@
+<<<<<<< HEAD
 discord.py>=2.3.2
 flask
+=======
+discord.py==2.3.2
+>>>>>>> 21c6152cba7b4d9b1beeb3e208e9db2795de5335
