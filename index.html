@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>記帳系統</title>
+</head>
+<body>
+
+<h1>💰 記帳系統</h1>
+
+<!-- 新增交易 -->
+<h2>新增交易</h2>
+<input id="payer" placeholder="誰付錢">
+<input id="amount" placeholder="金額">
+<input id="desc" placeholder="描述">
+<input id="people" placeholder="參與人 (空格分開)">
+<button onclick="addTransaction()">新增</button>
+
+<hr>
+
+<!-- 交易列表 -->
+<h2>交易列表</h2>
+<ul id="transactions"></ul>
+
+<hr>
+
+<!-- 債務 -->
+<h2>誰欠誰</h2>
+<button onclick="getSettle()">計算</button>
+<ul id="settle"></ul>
+
+<script>
+const API = "http://127.0.0.1:8000";
+
+// =========================
+// 新增交易
+// =========================
+async function addTransaction() {
+    const payer = document.getElementById("payer").value;
+    const amount = parseFloat(document.getElementById("amount").value);
+    const desc = document.getElementById("desc").value;
+    const people = document.getElementById("people").value.split(" ");
+
+    let split = {};
+    let share = amount / people.length;
+
+    people.forEach(p => {
+        split[p] = share;
+    });
+
+    await fetch(API + "/transactions", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            payer: payer,
+            amount: amount,
+            splits: split,
+            desc: desc
+        })
+    });
+
+    loadTransactions();
+}
+
+// =========================
+// 載入交易（含按鈕）
+// =========================
+async function loadTransactions() {
+    const res = await fetch(API + "/transactions");
+    const data = await res.json();
+
+    const list = document.getElementById("transactions");
+    list.innerHTML = "";
+
+    data.forEach(t => {
+        let li = document.createElement("li");
+
+        li.innerHTML = `
+            <b>${t.payer}</b> 付 ${t.amount} (${t.desc})
+            <button onclick="deleteTransaction(${t.id})">🗑 刪除</button>
+            <button onclick="editTransaction(${t.id})">✏️ 修改</button>
+        `;
+
+        list.appendChild(li);
+    });
+}
+
+// =========================
+// 刪除交易
+// =========================
+async function deleteTransaction(id) {
+    await fetch(API + "/transactions/" + id, {
+        method: "DELETE"
+    });
+
+    loadTransactions();
+}
+
+// =========================
+// 修改交易
+// =========================
+async function editTransaction(id) {
+    const payer = prompt("新付款人:");
+    const amount = parseFloat(prompt("新金額:"));
+    const desc = prompt("新描述:");
+    const people = prompt("參與人（空格分開）").split(" ");
+
+    let split = {};
+    let share = amount / people.length;
+
+    people.forEach(p => {
+        split[p] = share;
+    });
+
+    await fetch(API + "/transactions/" + id, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            payer: payer,
+            amount: amount,
+            splits: split,
+            desc: desc
+        })
+    });
+
+    loadTransactions();
+}
+
+// =========================
+// 計算誰欠誰
+// =========================
+async function getSettle() {
+    const res = await fetch(API + "/settle");
+    const data = await res.json();
+
+    const list = document.getElementById("settle");
+    list.innerHTML = "";
+
+    data.forEach(s => {
+        let li = document.createElement("li");
+        li.innerText = `${s.from} → ${s.to}: ${s.amount}`;
+        list.appendChild(li);
+    });
+}
+
+// =========================
+// 初始化
+// =========================
+loadTransactions();
+</script>
+
+</body>
+</html>
