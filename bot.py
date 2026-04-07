@@ -5,8 +5,7 @@ from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-# 如果您有 account.py，請保留這行；如果沒有，請註解掉
-# from account import add_transaction, calculate_balance, settle_debts
+from account import add_transaction, calculate_balance, settle_debts
 
 # 從 Render 環境變數讀取 TOKEN
 TOKEN = os.getenv("DISCORD_TOKEN")
