@@ -5,25 +5,9 @@ from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-from account import add_transaction, calculate_balance, settle_debts
-
 # 從 Render 環境變數讀取 TOKEN
 TOKEN = os.getenv("DISCORD_TOKEN")
-
 FILE = "data.json"
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is alive!"
-
-def run():
-    # Render 預設使用 10000 埠口
-    app.run(host='0.0.0.0', port=10000)
-
-# 啟動一個背景執行緒跑網頁，這樣不會卡住 Discord 機器人
-Thread(target=run).start()
 
 # =========================
 # Flask 保活伺服器 (解決 Render Port 偵測問題)
@@ -74,6 +58,8 @@ client = discord.Client(intents=intents)
 @client.event
 async def on_ready():
     print(f"✅ 機器人已上線：{client.user}")
+    print(f"目前登入身份：{client.user}")
+    print(f"已加入的伺服器：{[guild.name for guild in client.guilds]}")
 
 @client.event
 async def on_message(message):
