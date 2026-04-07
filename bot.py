@@ -1,7 +1,7 @@
 import discord
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from flask import Flask
 from threading import Thread
 
@@ -101,7 +101,11 @@ async def on_message(message):
                     for p in people:
                         splits[p] = share
 
-            now = datetime.now().strftime("%Y/%m/%d %H:%M")
+            # 建立一個 UTC+8 的時區物件
+            tw_tz = timezone(timedelta(hours=8))
+
+            # 抓取現在時間時，指定使用這個時區
+            now = datetime.now(tw_tz).strftime("%Y/%m/%d %H:%M")
             data = load_data()
             new_t = {
                 "id": data["next_id"],
