@@ -4,171 +4,169 @@ import os
 from datetime import datetime, timedelta, timezone
 from flask import Flask
 from threading import Thread
+from discord.ui import Button, View, Modal, TextInput
 
-# 從 Render 環境變數讀取 TOKEN
+# =========================
+# 基本設定與 Flask 保活
+# =========================
 TOKEN = os.getenv("DISCORD_TOKEN")
 FILE = "data.json"
 
-# =========================
-# Flask 保活伺服器 (解決 Render Port 偵測問題)
-# =========================
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Bot is alive!"
+def home(): return "Bot is alive!"
 
 def run_flask():
-    # 讀取 Render 分配的 PORT，預設為 10000
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run_flask)
-    t.start()
+    Thread(target=run_flask).start()
 
-# 啟動 Flask 伺服器
 keep_alive()
 
 # =========================
-# 資料處理工具
+# 資料處理
 # =========================
 def load_data():
-    if not os.path.exists(FILE):
-        return {"transactions": [], "next_id": 1}
+    if not os.path.exists(FILE): return {"transactions": [], "next_id": 1}
     try:
-        with open(FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {"transactions": [], "next_id": 1}
+        with open(FILE, "r", encoding="utf-8") as f: return json.load(f)
+    except: return {"transactions": [], "next_id": 1}
 
 def save_data(data):
     with open(FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 # =========================
-# Discord 機器人設定
+# 全自動彈出視窗 (Modals)
 # =========================
-intents = discord.Intents.default()
-intents.message_content = True 
-intents.members = True          
 
-client = discord.Client(intents=intents)
+# 新增帳目的視窗
+class AddRecordModal(Modal, title="新增帳目紀錄"):
+    amount = TextInput(label="金額", placeholder="例如: 200", min_length=1)
+    desc = TextInput(label="品項描述", placeholder="例如: 晚餐", min_length=1)
+    debt = TextInput(label="債務分配", placeholder="例如: joe欠100 (多位請空白隔開)", style=discord.TextStyle.paragraph)
 
-@client.event
-async def on_ready():
-    print(f"✅ 機器人已上線：{client.user}")
-    print(f"目前登入身份：{client.user}")
-    print(f"已加入的伺服器：{[guild.name for guild in client.guilds]}")
-
-@client.event
-async def on_message(message):
-    if message.author == client.user:
-        return
-
-    content = message.content.strip()
-
-    # !add 指令
-    if content.startswith("!add"):
+    async def on_submit(self, interaction: discord.Interaction):
         try:
-            parts = content.split()
-            if len(parts) < 4:
-                raise ValueError("參數不足")
-
-            amount = float(parts[1])
-            desc = parts[2]
-            debt_info = parts[3:]
-
+            amt_val = float(self.amount.value)
+            desc_val = self.desc.value
+            debt_info = self.debt.value.split()
+            
             splits = {}
             current_name = None
-
             for item in debt_info:
                 if "欠" in item:
                     if item.startswith("欠"):
                         money_str = item.replace("欠", "")
-                        if current_name and money_str:
-                            splits[current_name] = float(money_str)
+                        if current_name: splits[current_name] = float(money_str)
                     else:
                         name, money_str = item.split("欠")
                         splits[name] = float(money_str)
                 else:
                     current_name = item
+            
+            if not splits and debt_info:
+                share = round(amt_val / len(debt_info), 2)
+                for p in debt_info: splits[p] = share
 
-            if not splits:
-                people = [p for p in debt_info if p != "欠"]
-                if people:
-                    share = round(amount / len(people), 2)
-                    for p in people:
-                        splits[p] = share
-
-            # 建立一個 UTC+8 的時區物件
             tw_tz = timezone(timedelta(hours=8))
-
-            # 抓取現在時間時，指定使用這個時區
             now = datetime.now(tw_tz).strftime("%Y/%m/%d %H:%M")
             data = load_data()
             new_t = {
                 "id": data["next_id"],
-                "payer": message.author.name,
-                "amount": amount,
+                "payer": interaction.user.name,
+                "amount": amt_val,
                 "splits": splits,
-                "desc": desc,
+                "desc": desc_val,
                 "time": now
             }
-
             data["transactions"].append(new_t)
             data["next_id"] += 1
             save_data(data)
-            await message.channel.send(f"✅ 已幫 **{message.author.name}** 記下「{desc}」！")
+            await interaction.response.send_message(f"✅ 已記下「{desc_val}」！", ephemeral=False)
         except Exception as e:
-            await message.channel.send(f"❌ 錯誤: {e}")
+            await interaction.response.send_message(f"❌ 格式錯誤: {e}", ephemeral=True)
 
-    # !list 指令
-    elif content.startswith("!list"):
-        data = load_data()
-        transactions = data.get("transactions", [])
-        if not transactions:
-            await message.channel.send("📭 沒有任何交易紀錄")
-            return
-        msg = "📜 **所有交易紀錄：**\n"
-        for t in transactions:
-            msg += f"\n🔹 ID:{t['id']} │ {t.get('time','')} │ {t.get('desc','')}\n👤 {t.get('payer','')} 付款\n"
-            for name, amt in t.get("splits", {}).items():
-                if name != t.get('payer',''):
-                    msg += f"   └─ {name} 欠 {amt}\n"
-        await message.channel.send(msg)
+# 刪除紀錄的視窗
+class DeleteRecordModal(Modal, title="刪除帳目"):
+    id_to_del = TextInput(label="要刪除的 ID", placeholder="請輸入數字 ID")
 
-    # !delete 指令
-    elif content.startswith("!delete"):
+    async def on_submit(self, interaction: discord.Interaction):
         try:
-            delete_id = int(content.split()[1])
+            target_id = int(self.id_to_del.value)
             data = load_data()
             old_len = len(data["transactions"])
-            data["transactions"] = [t for t in data["transactions"] if t["id"] != delete_id]
+            data["transactions"] = [t for t in data["transactions"] if t["id"] != target_id]
             if len(data["transactions"]) == old_len:
-                await message.channel.send("❌ 找不到該 ID")
+                await interaction.response.send_message("❌ 找不到該 ID", ephemeral=True)
             else:
                 save_data(data)
-                await message.channel.send(f"🗑️ 已刪除 ID:{delete_id}")
+                await interaction.response.send_message(f"🗑️ 已刪除 ID:{target_id}", ephemeral=False)
         except:
-            await message.channel.send("❌ 請輸入正確 ID，例如：`!delete 1`")
+            await interaction.response.send_message("❌ 請輸入有效的數字 ID", ephemeral=True)
 
-    # !settle 指令
-    elif content.startswith("!settle"):
+# =========================
+# 按鈕選單 (View)
+# =========================
+class MainMenuView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="➕ 新增帳目", style=discord.ButtonStyle.green)
+    async def add_btn(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(AddRecordModal())
+
+    @discord.ui.button(label="📜 查看清單", style=discord.ButtonStyle.blurple)
+    async def list_btn(self, interaction: discord.Interaction, button: Button):
         data = load_data()
-        transactions = data.get("transactions", [])
-        if not transactions:
-            await message.channel.send("🎉 目前沒有任何紀錄喔！")
+        ts = data.get("transactions", [])
+        if not ts:
+            await interaction.response.send_message("📭 目前沒紀錄", ephemeral=True)
+            return
+        msg = "📜 **所有交易紀錄：**\n"
+        for t in ts:
+            msg += f"\n🔹 ID:{t['id']} │ {t['time']} │ {t['desc']}\n👤 {t['payer']} 付款\n"
+            for name, amt in t.get("splits", {}).items():
+                if name != t['payer']: msg += f"   └─ {name} 欠 {amt}\n"
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @discord.ui.button(label="💰 結算債務", style=discord.ButtonStyle.grey)
+    async def settle_btn(self, interaction: discord.Interaction, button: Button):
+        data = load_data()
+        ts = data.get("transactions", [])
+        if not ts:
+            await interaction.response.send_message("🎉 目前清空狀態！", ephemeral=True)
             return
         msg = "💰 **目前的債務關係：**\n"
-        for t in transactions:
-            header = f"\n**{t.get('time','')}** │ **{t.get('desc','')}**\n"
+        for t in ts:
             lines = "".join([f"└─ {n} 欠 {a} → {t['payer']}\n" for n, a in t.get("splits",{}).items() if str(n) != str(t['payer'])])
-            if lines: msg += header + lines
-        await message.channel.send(msg)
+            if lines: msg += f"\n**{t['time']}** │ **{t['desc']}**\n" + lines
+        await interaction.response.send_message(msg, ephemeral=True)
 
-# 啟動機器人
+    @discord.ui.button(label="🗑️ 刪除紀錄", style=discord.ButtonStyle.red)
+    async def del_btn(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(DeleteRecordModal())
+
+# =========================
+# 機器人啟動與指令
+# =========================
+intents = discord.Intents.default()
+intents.message_content = True
+client = discord.Client(intents=intents)
+
+@client.event
+async def on_ready():
+    print(f"✅ 機器人已就緒：{client.user}")
+
+@client.event
+async def on_message(message):
+    if message.author == client.user: return
+    
+    # 輸入 !menu 叫出按鈕面板
+    if message.content == "!menu":
+        await message.channel.send("🏮 **記帳助手主選單**\n點擊下方按鈕進行操作：", view=MainMenuView())
+
 if TOKEN:
     client.run(TOKEN)
-else:
-    print("❌ 錯誤：找不到 DISCORD_TOKEN 環境變數")
