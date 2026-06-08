@@ -29,14 +29,30 @@ keep_alive()
 # 資料處理
 # =========================
 def load_data():
-    if not os.path.exists(FILE): return {"transactions": [], "next_id": 1}
+    if not os.path.exists(FILE): return {"transactions": [], "next_id": 1, "user_payments": {}}
     try:
-        with open(FILE, "r", encoding="utf-8") as f: return json.load(f)
-    except: return {"transactions": [], "next_id": 1}
+        with open(FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+            if "user_payments" not in d: d["user_payments"] = {}
+            return d
+    except: return {"transactions": [], "next_id": 1, "user_payments": {}}
 
 def save_data(data):
     with open(FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
+# =========================
+# 動態產生結算按鈕的 View
+# =========================
+class SettleLinkView(View):
+    def __init__(self, debtor_name, payer_name, amount, link):
+        super().__init__(timeout=60)
+        # 建立一個 URL 按鈕，點擊後會直接開啟網頁/喚醒 App
+        self.add_item(Button(
+            label=f"📱 點我轉帳 {amount} 元給 {payer_name}", 
+            url=link, 
+            style=discord.ButtonStyle.link
+        ))
 
 # =========================
 # 全自動彈出視窗 (Modals)
@@ -136,14 +152,30 @@ class MainMenuView(View):
     async def settle_btn(self, interaction: discord.Interaction, button: Button):
         data = load_data()
         ts = data.get("transactions", [])
+        payments = data.get("user_payments", {})
+        
         if not ts:
             await interaction.response.send_message("🎉 目前清空狀態！", ephemeral=True)
             return
-        msg = "💰 **目前的債務關係：**\n"
+            
+        await interaction.response.defer(ephemeral=True) # 預防讀取過久超時
+        
+        await interaction.followup.send("💰 **目前的債務關係與轉帳連結：**\n*(若有人未綁定 Line Pay，將不會顯示按鈕)*", ephemeral=True)
+        
         for t in ts:
-            lines = "".join([f"└─ {n} 欠 {a} → {t['payer']}\n" for n, a in t.get("splits",{}).items() if str(n) != str(t['payer'])])
-            if lines: msg += f"\n**{t['time']}** │ **{t['desc']}**\n" + lines
-        await interaction.response.send_message(msg, ephemeral=True)
+            payer = t['payer']
+            payer_link = payments.get(payer) # 撈取付款人的 Line Pay 連結
+            
+            for debtor, amt in t.get("splits", {}).items():
+                if str(debtor) != str(payer):
+                    content = f"📈 **{t['desc']}** ({t['time']})\n 👤 **{debtor}** 欠 **{payer}** 💰 **{amt}元**"
+                    
+                    # 如果債權人（付款的人）有綁定 Line Pay 連結，就附帶按鈕發送
+                    if payer_link:
+                        view = SettleLinkView(debtor_name=debtor, payer_name=payer, amount=amt, link=payer_link)
+                        await interaction.followup.send(content, view=view, ephemeral=True)
+                    else:
+                        await interaction.followup.send(content + " *(未綁定轉帳連結)*", ephemeral=True)
 
     @discord.ui.button(label="🗑️ 刪除紀錄", style=discord.ButtonStyle.red)
     async def del_btn(self, interaction: discord.Interaction, button: Button):
@@ -164,9 +196,24 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user: return
     
-    # 輸入 !menu 叫出按鈕面板
+    # 指令一：叫出選單
     if message.content == "!menu":
         await message.channel.send("🏮 **記帳助手主選單**\n點擊下方按鈕進行操作：", view=MainMenuView())
+        
+    # 指令二：綁定個人的 Line Pay 連結
+    # 用法：!setpay https://line.me/R/nv/payment/transfer?payeeId=...
+    if message.content.startswith("!setpay "):
+        link = message.content.replace("!setpay ", "").strip()
+        
+        # 只要檢查前面這段大家共同擁有的網址字串
+        if not link.startswith("https://line.me/R/pay/epiweb/"):
+            await message.channel.send("❌ 格式不正確，請輸入合法的 LINE 轉帳連結！")
+            return
+            
+        data = load_data()
+        data["user_payments"][message.author.name] = link
+        save_data(data)
+        await message.channel.send(f"✅ 成功為使用者 **{message.author.name}** 綁定 LINE Pay 轉帳連結！")
 
 if TOKEN:
     client.run(TOKEN)
