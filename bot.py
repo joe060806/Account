@@ -26,16 +26,19 @@ def keep_alive():
 keep_alive()
 
 # =========================
-# 資料處理
+# 資料處理 (升級防呆機制)
 # =========================
 def load_data():
     if not os.path.exists(FILE): return {"transactions": [], "next_id": 1, "user_payments": {}}
     try:
         with open(FILE, "r", encoding="utf-8") as f:
             d = json.load(f)
+            # 核心向下相容防呆：若舊資料沒這兩個 Key，自動補上，防止 KeyError 崩潰
             if "user_payments" not in d: d["user_payments"] = {}
+            if "transactions" not in d: d["transactions"] = []
             return d
-    except: return {"transactions": [], "next_id": 1, "user_payments": {}}
+    except: 
+        return {"transactions": [], "next_id": 1, "user_payments": {}}
 
 def save_data(data):
     with open(FILE, "w", encoding="utf-8") as f:
@@ -158,24 +161,34 @@ class MainMenuView(View):
             await interaction.response.send_message("🎉 目前清空狀態！", ephemeral=True)
             return
             
-        await interaction.response.defer(ephemeral=True) # 預防讀取過久超時
+        # 1. 立即回應，避免 3 秒超時卡死
+        await interaction.response.defer(ephemeral=True)
         
-        await interaction.followup.send("💰 **目前的債務關係與轉帳連結：**\n*(若有人未綁定 Line Pay，將不會顯示按鈕)*", ephemeral=True)
-        
-        for t in ts:
-            payer = t['payer']
-            payer_link = payments.get(payer) # 撈取付款人的 Line Pay 連結
+        # 2. 進行邏輯重構：為了避免多筆資料爆發 API 速率限制，限制單次最多顯示最前頭的帳目，或整合成一筆發送。
+        # 這裡精確採用一次 followup 發送一條的方式，但我們加上異常捕獲（Try-Except）看是不是有髒資料
+        try:
+            has_debt = False
+            for t in ts:
+                payer = t['payer']
+                payer_link = payments.get(payer)
+                
+                for debtor, amt in t.get("splits", {}).items():
+                    if str(debtor) != str(payer):
+                        has_debt = True
+                        content = f"📈 **{t['desc']}** ({t['time']})\n👤 **{debtor}** 欠 **{payer}** 💰 **{amt}元**"
+                        
+                        if payer_link:
+                            view = SettleLinkView(debtor_name=debtor, payer_name=payer, amount=amt, link=payer_link)
+                            await interaction.followup.send(content, view=view, ephemeral=True)
+                        else:
+                            await interaction.followup.send(content + "\n*(⚠️ 債權人未綁定 LINE Pay 轉帳連結，無法顯示按鈕)*", ephemeral=True)
             
-            for debtor, amt in t.get("splits", {}).items():
-                if str(debtor) != str(payer):
-                    content = f"📈 **{t['desc']}** ({t['time']})\n 👤 **{debtor}** 欠 **{payer}** 💰 **{amt}元**"
-                    
-                    # 如果債權人（付款的人）有綁定 Line Pay 連結，就附帶按鈕發送
-                    if payer_link:
-                        view = SettleLinkView(debtor_name=debtor, payer_name=payer, amount=amt, link=payer_link)
-                        await interaction.followup.send(content, view=view, ephemeral=True)
-                    else:
-                        await interaction.followup.send(content + " *(未綁定轉帳連結)*", ephemeral=True)
+            if not has_debt:
+                await interaction.followup.send("🎉 雖然有交易紀錄，但目前沒有產生實質債務關係！", ephemeral=True)
+                
+        except Exception as e:
+            # 如果後台掛掉，至少要把錯誤訊息噴出來，按鈕才不會死得不明不白
+            await interaction.followup.send(f"❌ 結算邏輯執行失敗，原因: {e}", ephemeral=True)
 
     @discord.ui.button(label="🗑️ 刪除紀錄", style=discord.ButtonStyle.red)
     async def del_btn(self, interaction: discord.Interaction, button: Button):
@@ -200,14 +213,19 @@ async def on_message(message):
     if message.content == "!menu":
         await message.channel.send("🏮 **記帳助手主選單**\n點擊下方按鈕進行操作：", view=MainMenuView())
         
-    # 指令二：綁定個人的 Line Pay 連結
-    # 用法：!setpay https://line.me/R/nv/payment/transfer?payeeId=...
+    # 指令二：綁定個人的 Line Pay 連結 (強效防呆重構版)
     if message.content.startswith("!setpay "):
-        link = message.content.replace("!setpay ", "").strip()
+        raw_text = message.content.replace("!setpay ", "").strip()
         
-        # 只要檢查前面這段大家共同擁有的網址字串
-        if not link.startswith("https://line.me/R/pay/epiweb/"):
-            await message.channel.send("❌ 格式不正確，請輸入合法的 LINE 轉帳連結！")
+        # 自動從輸入的段落中，精準過濾出包含 line 轉帳的 URL 標籤
+        link = None
+        for word in raw_text.split():
+            if "line.me/" in word:
+                link = word
+                break
+                
+        if not link:
+            await message.channel.send("❌ 格式不正確！請確認輸入的內容包含合法的 LINE 轉帳連結。")
             return
             
         data = load_data()
