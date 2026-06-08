@@ -153,42 +153,62 @@ class MainMenuView(View):
 
     @discord.ui.button(label="💰 結算債務", style=discord.ButtonStyle.grey)
     async def settle_btn(self, interaction: discord.Interaction, button: Button):
-        data = load_data()
-        ts = data.get("transactions", [])
-        payments = data.get("user_payments", {})
-        
-        if not ts:
-            await interaction.response.send_message("🎉 目前清空狀態！", ephemeral=True)
-            return
-            
-        # 1. 立即回應，避免 3 秒超時卡死
-        await interaction.response.defer(ephemeral=True)
-        
-        # 2. 進行邏輯重構：為了避免多筆資料爆發 API 速率限制，限制單次最多顯示最前頭的帳目，或整合成一筆發送。
-        # 這裡精確採用一次 followup 發送一條的方式，但我們加上異常捕獲（Try-Except）看是不是有髒資料
         try:
-            has_debt = False
+            data = load_data()
+            ts = data.get("transactions", [])
+            payments = data.get("user_payments", {})
+            
+            if not ts:
+                await interaction.response.send_message("🎉 目前清空狀態，沒有任何記帳紀錄！", ephemeral=True)
+                return
+            
+            # 1. 建立一個清單，用來收集所有準備要發送的債務訊息與 View
+            debt_outputs = []
+            
             for t in ts:
                 payer = t['payer']
-                payer_link = payments.get(payer)
+                payer_link = payments.get(payer) # 檢查付款人有沒有綁定連結
                 
                 for debtor, amt in t.get("splits", {}).items():
                     if str(debtor) != str(payer):
-                        has_debt = True
                         content = f"📈 **{t['desc']}** ({t['time']})\n👤 **{debtor}** 欠 **{payer}** 💰 **{amt}元**"
                         
+                        # 判斷要不要附帶 LINE Pay 按鈕
                         if payer_link:
                             view = SettleLinkView(debtor_name=debtor, payer_name=payer, amount=amt, link=payer_link)
-                            await interaction.followup.send(content, view=view, ephemeral=True)
+                            debt_outputs.append((content, view))
                         else:
-                            await interaction.followup.send(content + "\n*(⚠️ 債權人未綁定 LINE Pay 轉帳連結，無法顯示按鈕)*", ephemeral=True)
+                            content += "\n*(⚠️ 債權人未綁定 LINE Pay 轉帳連結，無法顯示按鈕)*"
+                            debt_outputs.append((content, None))
             
-            if not has_debt:
-                await interaction.followup.send("🎉 雖然有交易紀錄，但目前沒有產生實質債務關係！", ephemeral=True)
+            # 2. 檢查到底有沒有產生債務
+            if not debt_outputs:
+                await interaction.response.send_message("🎉 雖然有交易紀錄，但目前沒有產生實質債務關係！", ephemeral=True)
+                return
                 
+            # 3. 核心安全發送機制：第一筆用 response.send_message，後續的才用 followup
+            # 這樣可以完美避開 Discord 的連續發送卡死限制！
+            first_content, first_view = debt_outputs[0]
+            if first_view:
+                await interaction.response.send_message(f"💰 **目前的債務關係與轉帳連結：**\n\n{first_content}", view=first_view, ephemeral=True)
+            else:
+                await interaction.response.send_message(f"💰 **目前的債務關係與轉帳連結：**\n\n{first_content}", ephemeral=True)
+                
+            # 如果有第二筆以上的債務，才用 followup 慢慢送出
+            if len(debt_outputs) > 1:
+                for content, view in debt_outputs[1:]:
+                    if view:
+                        await interaction.followup.send(content, view=view, ephemeral=True)
+                    else:
+                        await interaction.followup.send(content, ephemeral=True)
+                        
         except Exception as e:
-            # 如果後台掛掉，至少要把錯誤訊息噴出來，按鈕才不會死得不明不白
-            await interaction.followup.send(f"❌ 結算邏輯執行失敗，原因: {e}", ephemeral=True)
+            # 防禦性除錯：如果真的在某個地方崩潰，強制把錯誤噴在畫面上
+            print(f"【後台結算崩潰】: {e}")
+            try:
+                await interaction.response.send_message(f"❌ 結算發生錯誤: {e}", ephemeral=True)
+            except:
+                await interaction.followup.send(f"❌ 結算發生錯誤: {e}", ephemeral=True)
 
     @discord.ui.button(label="🗑️ 刪除紀錄", style=discord.ButtonStyle.red)
     async def del_btn(self, interaction: discord.Interaction, button: Button):
