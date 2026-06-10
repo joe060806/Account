@@ -162,39 +162,58 @@ class MainMenuView(View):
                 await interaction.response.send_message("🎉 目前清空狀態，沒有任何記帳紀錄！", ephemeral=True)
                 return
             
-            # 1. 建立一個清單，用來收集所有準備要發送的債務訊息與 View
-            debt_outputs = []
+            # ==========================================
+            # 核心演算法：合併同債務人與債權人的所有金額
+            # ==========================================
+            # 結構會長這樣：{(debtor, payer): total_amount}
+            consolidated_debts = {}
             
             for t in ts:
                 payer = t['payer']
-                payer_link = payments.get(payer) # 檢查付款人有沒有綁定連結
-                
                 for debtor, amt in t.get("splits", {}).items():
                     if str(debtor) != str(payer):
-                        content = f"📈 **{t['desc']}** ({t['time']})\n👤 **{debtor}** 欠 **{payer}** 💰 **{amt}元**"
-                        
-                        # 判斷要不要附帶 LINE Pay 按鈕
-                        if payer_link:
-                            view = SettleLinkView(debtor_name=debtor, payer_name=payer, amount=amt, link=payer_link)
-                            debt_outputs.append((content, view))
-                        else:
-                            content += "\n*(⚠️ 債權人未綁定 LINE Pay 轉帳連結，無法顯示按鈕)*"
-                            debt_outputs.append((content, None))
+                        # 建立唯一的 (欠錢人, 收錢人) 鑰匙
+                        key = (str(debtor), str(payer))
+                        # 如果已經存在，就累加金額；不存在就給初始值
+                        consolidated_debts[key] = consolidated_debts.get(key, 0.0) + float(amt)
             
-            # 2. 檢查到底有沒有產生債務
+            # ==========================================
+            # UI 渲染：發送合併後的結果
+            # ==========================================
+            debt_outputs = []
+            
+            for (debtor, payer), total_amt in consolidated_debts.items():
+                # 四捨五入到小數點後第一位或整數（依據你的顯示習慣，這裡維持四捨五入）
+                total_amt = round(total_amt, 2)
+                
+                # 跳過金額為 0 的無效債務
+                if total_amt <= 0:
+                    continue
+                    
+                payer_link = payments.get(payer)
+                content = f"👤 **{debtor}** 總共欠 **{payer}** 💰 **{total_amt}元**"
+                
+                if payer_link:
+                    # 這裡會帶入合併後的總金額總數！
+                    view = SettleLinkView(debtor_name=debtor, payer_name=payer, amount=total_amt, link=payer_link)
+                    debt_outputs.append((content, view))
+                else:
+                    content += "\n*(⚠️ 債權人未綁定 LINE Pay 轉帳連結，無法顯示按鈕)*"
+                    debt_outputs.append((content, None))
+            
+            # 檢查最後有沒有實質債務
             if not debt_outputs:
-                await interaction.response.send_message("🎉 雖然有交易紀錄，但目前沒有產生實質債務關係！", ephemeral=True)
+                await interaction.response.send_message("🎉 目前所有債務已兩清，沒有產生實質債務關係！", ephemeral=True)
                 return
                 
-            # 3. 核心安全發送機制：第一筆用 response.send_message，後續的才用 followup
-            # 這樣可以完美避開 Discord 的連續發送卡死限制！
+            # 第一筆用 response 發送
             first_content, first_view = debt_outputs[0]
             if first_view:
-                await interaction.response.send_message(f"💰 **目前的債務關係與轉帳連結：**\n\n{first_content}", view=first_view, ephemeral=True)
+                await interaction.response.send_message(f"💰 **【合併結算】目前的總債務關係：**\n\n{first_content}", view=first_view, ephemeral=True)
             else:
-                await interaction.response.send_message(f"💰 **目前的債務關係與轉帳連結：**\n\n{first_content}", ephemeral=True)
+                await interaction.response.send_message(f"💰 **【合併結算】目前的總債務關係：**\n\n{first_content}", ephemeral=True)
                 
-            # 如果有第二筆以上的債務，才用 followup 慢慢送出
+            # 第二筆以上才用 followup 發送
             if len(debt_outputs) > 1:
                 for content, view in debt_outputs[1:]:
                     if view:
@@ -203,8 +222,7 @@ class MainMenuView(View):
                         await interaction.followup.send(content, ephemeral=True)
                         
         except Exception as e:
-            # 防禦性除錯：如果真的在某個地方崩潰，強制把錯誤噴在畫面上
-            print(f"【後台結算崩潰】: {e}")
+            print(f"【合併結算崩潰】: {e}")
             try:
                 await interaction.response.send_message(f"❌ 結算發生錯誤: {e}", ephemeral=True)
             except:
