@@ -141,14 +141,70 @@ class MainMenuView(View):
     async def list_btn(self, interaction: discord.Interaction, button: Button):
         data = load_data()
         ts = data.get("transactions", [])
+        
         if not ts:
             await interaction.response.send_message("📭 目前沒紀錄", ephemeral=True)
             return
-        msg = "📜 **所有交易紀錄：**\n"
+
+        # ==========================================
+        # 1. 處理時間與計算相對時間的輔助函式
+        # ==========================================
+        tw_tz = timezone(timedelta(hours=8))
+        now = datetime.now(tw_tz)
+        
+        def get_relative_time(time_str):
+            try:
+                # 解析紀錄中的時間字串
+                t_time = datetime.strptime(time_str, "%Y/%m/%d %H:%M").replace(tzinfo=tw_tz)
+                diff = now - t_time
+                
+                if diff.days == 0:
+                    if diff.seconds < 60: return "剛剛"
+                    if diff.seconds < 3600: return f"{diff.seconds // 60} 分鐘前"
+                    return f"{diff.seconds // 3600} 小時前"
+                elif diff.days == 1: return "昨天"
+                elif diff.days == 2: return "前天"
+                elif diff.days < 7: return f"{diff.days} 天前"
+                else: return "一週以上"
+            except:
+                return ""
+
+        # ==========================================
+        # 2. 時間維度統計（計算本週累計消費）
+        # ==========================================
+        week_count = 0
+        week_total = 0.0
+        one_week_ago = now - timedelta(days=7)
+        
         for t in ts:
-            msg += f"\n🔹 ID:{t['id']} │ {t['time']} │ {t['desc']}\n👤 {t['payer']} 付款\n"
+            try:
+                t_time = datetime.strptime(t['time'], "%Y/%m/%d %H:%M").replace(tzinfo=tw_tz)
+                if t_time >= one_week_ago:
+                    week_count += 1
+                    week_total += float(t['amount'])
+            except: pass
+
+        # ==========================================
+        # 3. 渲染輸出介面（加入分頁概念：預設只顯示最新的 5 筆）
+        # ==========================================
+        msg = f"📊 **【時間維度摘要】**\n📅 過去 7 天內累計記帳：`{week_count}` 筆 │ 總金額：`{round(week_total, 1)}` 元\n"
+        msg += "─" * 15 + "\n📜 **最新交易清單 (僅顯示最新 5 筆)：**\n"
+        
+        # 倒序排列（讓最新建立的帳目排在最上面）
+        latest_ts = list(reversed(ts))[:5]
+        
+        for t in latest_ts:
+            rel_time = get_relative_time(t['time'])
+            time_display = f"{t['time']} *({rel_time})*" if rel_time else t['time']
+            
+            msg += f"\n🔹 **ID:{t['id']}** │ 🕒 {time_display} │ 🏷️ **{t['desc']}**\n"
+            msg += f"👤 Payer: `{t['payer']}` (付 {t['amount']} 元)\n"
+            
+            # 優化債務人顯示
             for name, amt in t.get("splits", {}).items():
-                if name != t['payer']: msg += f"   └─ {name} 欠 {amt}\n"
+                if str(name) != str(t['payer']): 
+                    msg += f"   └─ 👤 {name} 欠 {amt} 元\n"
+                    
         await interaction.response.send_message(msg, ephemeral=True)
 
     @discord.ui.button(label="💰 結算債務", style=discord.ButtonStyle.grey)
