@@ -62,36 +62,77 @@ class SettleLinkView(View):
 # =========================
 
 # 新增帳目的視窗
-class AddRecordModal(Modal, title="新增帳目紀錄"):
-    amount = TextInput(label="金額", placeholder="例如: 200", min_length=1)
-    desc = TextInput(label="品項描述", placeholder="例如: 晚餐", min_length=1)
-    debt = TextInput(label="債務分配", placeholder="例如: joe欠100 (多位請空白隔開)", style=discord.TextStyle.paragraph)
+class AddRecordModal(Modal, title="➕ 建立新帳目（支援智慧均分）"):
+    # 1. 界面更新：更清晰的提示標籤與防呆長度限制
+    amount = TextInput(
+        label="💰 消費總金額", 
+        placeholder="請輸入純數字，例如: 600 (不需打字元)", 
+        min_length=1, 
+        max_length=10
+    )
+    desc = TextInput(
+        label="🏷️ 品項或活動描述", 
+        placeholder="例如: 麥當勞晚餐、好市多採買...", 
+        min_length=1, 
+        max_length=50
+    )
+    debt = TextInput(
+        label="👥 債務人與金額分配 (留空則不計債務)", 
+        placeholder="智慧模式一（自訂）：李欠200 呂欠150\n智慧模式二（均分）：李 呂 偉 (自動平分總金額)", 
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=200
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            amt_val = float(self.amount.value)
-            desc_val = self.desc.value
-            debt_info = self.debt.value.split()
+            # 防禦性清理：過濾掉使用者可能誤打的 "$", "," 等符號
+            clean_amount_str = self.amount.value.replace("$", "").replace(",", "").strip()
+            amt_val = float(clean_amount_str)
+            
+            if amt_val <= 0:
+                await interaction.response.send_message("❌ 金額必須大於 0 元！", ephemeral=True)
+                return
+
+            desc_val = self.desc.value.strip()
+            raw_debt_info = self.debt.value.strip()
             
             splits = {}
-            current_name = None
-            for item in debt_info:
-                if "欠" in item:
-                    if item.startswith("欠"):
-                        money_str = item.replace("欠", "")
-                        if current_name: splits[current_name] = float(money_str)
-                    else:
-                        name, money_str = item.split("欠")
-                        splits[name] = float(money_str)
-                else:
-                    current_name = item
             
-            if not splits and debt_info:
-                share = round(amt_val / len(debt_info), 2)
-                for p in debt_info: splits[p] = share
+            if raw_debt_info:
+                # 將輸入依空白或換行切分成標籤串（Tokens）
+                tokens = raw_debt_info.split()
+                
+                # 判斷使用者是否使用了「模式二：純人名均分模式」
+                # 如果所有輸入的字詞裡面，完全沒有任何人打「欠」這個字，就啟動全自動均分
+                is_pure_split_mode = all("欠" not in token for token in tokens)
+                
+                if is_pure_split_mode:
+                    # 總金額除以（全體欠錢人數），自動四捨五入到小數後一位
+                    share = round(amt_val / len(tokens), 1)
+                    for person in tokens:
+                        splits[person] = share
+                else:
+                    # 模式一：解析傳統的「李欠200」自訂模式
+                    current_name = None
+                    for item in tokens:
+                        if "欠" in item:
+                            if item.startswith("欠"):
+                                money_str = item.replace("欠", "")
+                                if current_name: 
+                                    splits[current_name] = float(money_str)
+                            else:
+                                name, money_str = item.split("欠")
+                                splits[name] = float(money_str)
+                        else:
+                            # 處理名字跟「欠」字被空白隔開的邊緣狀況（例如：李 欠200）
+                            current_name = item
 
+            # 取得台灣時間 (UTC+8)
             tw_tz = timezone(timedelta(hours=8))
             now = datetime.now(tw_tz).strftime("%Y/%m/%d %H:%M")
+            
+            # 寫入資料庫
             data = load_data()
             new_t = {
                 "id": data["next_id"],
@@ -104,10 +145,29 @@ class AddRecordModal(Modal, title="新增帳目紀錄"):
             data["transactions"].append(new_t)
             data["next_id"] += 1
             save_data(data)
-            await interaction.response.send_message(f"✅ 已記下「{desc_val}」！", ephemeral=False)
+            
+            # ==========================================
+            # 界面更新：送出精緻的動態確認小卡
+            # ==========================================
+            confirm_msg = f"✅ **成功記帳！**\n"
+            confirm_msg += f"─" * 15 + f"\n"
+            confirm_msg += f"📝 **品項**：{desc_val}\n"
+            confirm_msg += f"👤 **付款人**：`{interaction.user.name}` │ 💰 **總金額**：{amt_val} 元\n"
+            
+            if splits:
+                confirm_msg += "👥 **債務分配結果**：\n"
+                for name, amt in splits.items():
+                    confirm_msg += f" └─ {name} 應分擔 `{amt}` 元\n"
+            else:
+                confirm_msg += "✨ *(此筆交易為個人消費，未產生群組債務)*\n"
+                
+            await interaction.response.send_message(confirm_msg, ephemeral=False)
+            
+        except ValueError:
+            await interaction.response.send_message("❌ **格式錯誤**：請確保『消費總金額』與『債務金額』輸入的是有效數字！", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ 格式錯誤: {e}", ephemeral=True)
-
+            await interaction.response.send_message(f"❌ **系統異常**：無法處理此記帳請求 ({e})", ephemeral=True)
+            
 # 刪除紀錄的視窗
 class DeleteRecordModal(Modal, title="刪除帳目"):
     id_to_del = TextInput(label="要刪除的 ID", placeholder="請輸入數字 ID")
