@@ -167,24 +167,118 @@ class AddRecordModal(Modal, title="➕ 建立新帳目（支援智慧均分）")
             await interaction.response.send_message("❌ **格式錯誤**：請確保『消費總金額』與『債務金額』輸入的是有效數字！", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ **系統異常**：無法處理此記帳請求 ({e})", ephemeral=True)
-            
+
 # 刪除紀錄的視窗
-class DeleteRecordModal(Modal, title="刪除帳目"):
-    id_to_del = TextInput(label="要刪除的 ID", placeholder="請輸入數字 ID")
+class DeleteConfirmView(View):
+    def __init__(self, target_id, t_desc, t_amount, t_payer, original_user):
+        super().__init__(timeout=45)
+        self.target_id = target_id
+        self.t_desc = t_desc
+        self.t_amount = t_amount
+        self.t_payer = t_payer
+        self.original_user = original_user
+
+    # 🔴 核心危險操作：確認刪除
+    @discord.ui.button(label="🔴 確定刪除，無法復原", style=discord.ButtonStyle.danger)
+    async def confirm_delete(self, interaction: discord.Interaction, button: Button):
+        # 安全校驗：防止非當事人亂入點擊按鈕
+        if interaction.user.id != self.original_user.id:
+            await interaction.response.send_message("❌ 你不是發起刪除請求的人，無法操作此按鈕！", ephemeral=True)
+            return
+            
+        try:
+            data = load_data()
+            old_len = len(data["transactions"])
+            
+            # 實作軟刪除 (Soft Delete) 或是硬刪除，這裡採用硬刪除，但加上安全防護
+            data["transactions"] = [t for t in data["transactions"] if t["id"] != self.target_id]
+            
+            if len(data["transactions"]) == old_len:
+                await interaction.response.edit_message(content="❌ 刪除失敗：該帳目可能已被其他用戶刪除。", view=None)
+            else:
+                save_data(data)
+                # 刪除成功後，將原訊息的按鈕移除，避免重複點擊
+                await interaction.response.edit_message(
+                    content=f"🗑️ **帳目已成功徹底刪除！**\n📌 曾被刪除項目：ID:{self.target_id} │ {self.t_desc} ({self.t_amount}元) 由 {self.t_payer} 付款。", 
+                    view=None
+                )
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 執行刪除時發生系統異常: {e}", ephemeral=True)
+
+    # 🟢 取消操作
+    @discord.ui.button(label="🟢 取消操作", style=discord.ButtonStyle.success)
+    async def cancel_delete(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.original_user.id:
+            await interaction.response.send_message("❌ 無法操作此按鈕！", ephemeral=True)
+            return
+        await interaction.response.edit_message(content="🔄 已取消刪除操作，帳目完好無損。", view=None)
+
+
+# ==========================================
+# 升級版：具備資料校驗功能的刪除彈出視窗
+# ==========================================
+class DeleteRecordModal(Modal, title="🗑️ 安全刪除帳目紀錄"):
+    id_to_del = TextInput(
+        label="📌 請輸入要刪除的交易 ID", 
+        placeholder="例如: 1 (可至『查看清單』確認 ID)",
+        min_length=1,
+        max_length=5
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            target_id = int(self.id_to_del.value)
+            # 1. 前置輸入防禦性檢查
+            clean_id_str = self.id_to_del.value.strip()
+            if not clean_id_str.isdigit():
+                await interaction.response.send_message("❌ **輸入錯誤**：ID 必須為純數字，請重新操作！", ephemeral=True)
+                return
+                
+            target_id = int(clean_id_str)
             data = load_data()
-            old_len = len(data["transactions"])
-            data["transactions"] = [t for t in data["transactions"] if t["id"] != target_id]
-            if len(data["transactions"]) == old_len:
-                await interaction.response.send_message("❌ 找不到該 ID", ephemeral=True)
-            else:
-                save_data(data)
-                await interaction.response.send_message(f"🗑️ 已刪除 ID:{target_id}", ephemeral=False)
-        except:
-            await interaction.response.send_message("❌ 請輸入有效的數字 ID", ephemeral=True)
+            
+            # 2. 尋找目標帳目，確認其是否存在
+            target_transaction = None
+            for t in data.get("transactions", []):
+                if t["id"] == target_id:
+                    target_transaction = t
+                    break
+            
+            if not target_transaction:
+                await interaction.response.send_message(f"🔍 找不到 ID 為 `{target_id}` 的帳目，可能已被刪除！", ephemeral=True)
+                return
+                
+            # 3. 擷取目標資訊，用於渲染二次確認介面
+            t_desc = target_transaction.get("desc", "未知品項")
+            t_amount = target_transaction.get("amount", 0)
+            t_payer = target_transaction.get("payer", "未知付款人")
+            t_time = target_transaction.get("time", "")
+            
+            # 4. 渲染極具警示效果的二次確認 UI 訊息小卡（設定 ephemeral=True 確保隱私安全）
+            warning_content = (
+                f"⚠️ **【安全刪除確認】您正在嘗試刪除以下帳目紀錄：**\n"
+                f"─" * 20 + f"\n"
+                f"🔹 **帳目 ID**：`{target_id}`\n"
+                f"🕒 **記帳時間**：{t_time}\n"
+                f"🏷️ **品項描述**：*{t_desc}*\n"
+                f"👤 **原付款人**：`{t_payer}` │ 💰 **總金額**：`{t_amount}` 元\n"
+                f"─" * 20 + f"\n"
+                f"🚨 **警告**：刪除後將重新引發財務連帶關係變動，請確認是否繼續？"
+            )
+            
+            # 產生帶有安全按鈕的 View
+            confirm_view = DeleteConfirmView(
+                target_id=target_id, 
+                t_desc=t_desc, 
+                t_amount=t_amount, 
+                t_payer=t_payer, 
+                original_user=interaction.user
+            )
+            
+            # 發送確認小卡
+            await interaction.response.send_message(content=warning_content, view=confirm_view, ephemeral=True)
+            
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 刪除模組初始化異常: {e}", ephemeral=True)
 
 # =========================
 # 按鈕選單 (View)
