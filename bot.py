@@ -209,6 +209,7 @@ class DeleteConfirmView(View):
 
 
 # 具備資料校驗功能的刪除彈出視窗
+# 具備資料校驗功能的刪除彈出視窗
 class DeleteRecordModal(Modal, title="🗑️ 安全刪除帳目紀錄"):
     id_to_del = TextInput(
         label="📌 請輸入要刪除的交易 ID", 
@@ -245,17 +246,15 @@ class DeleteRecordModal(Modal, title="🗑️ 安全刪除帳目紀錄"):
             t_payer = target_transaction.get("payer", "未知付款人")
             t_time = target_transaction.get("time", "")
             
-            # 4. 渲染二次確認警告介面
-            warning_content = (
-                f"⚠️ **【安全刪除確認】您正在嘗試刪除以下帳目紀錄：**\n"
-                f"─" * 20 + f"\n"
-                f"🔹 **帳目 ID**：`{target_id}`\n"
-                f"🕒 **記帳時間**：{t_time}\n"
-                f"🏷️ **品項描述**：*{t_desc}*\n"
-                f"👤 **原付款人**：`{t_payer}` │ 💰 **總金額**：`{t_amount}` 元\n"
-                f"─" * 20 + f"\n"
-                f"🚨 **警告**：刪除後將重新引發財務連帶關係變動，請確認是否繼續？"
-            )
+            # 4. 🔴 改用乾淨的多行字串，徹底根絕字數爆量的 Bug
+            warning_content = f"""⚠️ **【安全刪除確認】您正在嘗試刪除以下帳目紀錄：**
+                ────────────────────
+                🔹 **帳目 ID**：`{target_id}`
+                🕒 **記帳時間**：{t_time}
+                🏷️ **品項描述**：*{t_desc}*
+                👤 **原付款人**：`{t_payer}` │ 💰 **總金額**：`{t_amount}` 元
+                ────────────────────
+                🚨 **警告**：刪除後將重新引發財務連帶關係變動，請確認是否繼續？"""
             
             confirm_view = DeleteConfirmView(
                 target_id=target_id, 
