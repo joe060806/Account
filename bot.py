@@ -57,13 +57,12 @@ class SettleLinkView(View):
             style=discord.ButtonStyle.link
         ))
 
-# =========================
-# 全自動彈出視窗 (Modals)
-# =========================
+# ==========================================
+# 全自動彈出視窗 (Modals) 與二次確認 (Views)
+# ==========================================
 
 # 新增帳目的視窗
 class AddRecordModal(Modal, title="➕ 建立新帳目（支援智慧均分）"):
-    # 1. 界面更新：更清晰的提示標籤與防呆長度限制
     amount = TextInput(
         label="💰 消費總金額", 
         placeholder="請輸入純數字，例如: 600 (不需打字元)", 
@@ -104,7 +103,6 @@ class AddRecordModal(Modal, title="➕ 建立新帳目（支援智慧均分）")
                 tokens = raw_debt_info.split()
                 
                 # 判斷使用者是否使用了「模式二：純人名均分模式」
-                # 如果所有輸入的字詞裡面，完全沒有任何人打「欠」這個字，就啟動全自動均分
                 is_pure_split_mode = all("欠" not in token for token in tokens)
                 
                 if is_pure_split_mode:
@@ -125,7 +123,6 @@ class AddRecordModal(Modal, title="➕ 建立新帳目（支援智慧均分）")
                                 name, money_str = item.split("欠")
                                 splits[name] = float(money_str)
                         else:
-                            # 處理名字跟「欠」字被空白隔開的邊緣狀況（例如：李 欠200）
                             current_name = item
 
             # 取得台灣時間 (UTC+8)
@@ -146,9 +143,7 @@ class AddRecordModal(Modal, title="➕ 建立新帳目（支援智慧均分）")
             data["next_id"] += 1
             save_data(data)
             
-            # ==========================================
             # 界面更新：送出精緻的動態確認小卡
-            # ==========================================
             confirm_msg = f"✅ **成功記帳！**\n"
             confirm_msg += f"─" * 15 + f"\n"
             confirm_msg += f"📝 **品項**：{desc_val}\n"
@@ -168,7 +163,8 @@ class AddRecordModal(Modal, title="➕ 建立新帳目（支援智慧均分）")
         except Exception as e:
             await interaction.response.send_message(f"❌ **系統異常**：無法處理此記帳請求 ({e})", ephemeral=True)
 
-# 刪除紀錄的視窗
+
+# 刪除確認按鈕的專用 View (僅限觸發者操作)
 class DeleteConfirmView(View):
     def __init__(self, target_id, t_desc, t_amount, t_payer, original_user):
         super().__init__(timeout=45)
@@ -181,7 +177,6 @@ class DeleteConfirmView(View):
     # 🔴 核心危險操作：確認刪除
     @discord.ui.button(label="🔴 確定刪除，無法復原", style=discord.ButtonStyle.danger)
     async def confirm_delete(self, interaction: discord.Interaction, button: Button):
-        # 安全校驗：防止非當事人亂入點擊按鈕
         if interaction.user.id != self.original_user.id:
             await interaction.response.send_message("❌ 你不是發起刪除請求的人，無法操作此按鈕！", ephemeral=True)
             return
@@ -190,14 +185,13 @@ class DeleteConfirmView(View):
             data = load_data()
             old_len = len(data["transactions"])
             
-            # 實作軟刪除 (Soft Delete) 或是硬刪除，這裡採用硬刪除，但加上安全防護
+            # 執行過濾硬刪除
             data["transactions"] = [t for t in data["transactions"] if t["id"] != self.target_id]
             
             if len(data["transactions"]) == old_len:
                 await interaction.response.edit_message(content="❌ 刪除失敗：該帳目可能已被其他用戶刪除。", view=None)
             else:
                 save_data(data)
-                # 刪除成功後，將原訊息的按鈕移除，避免重複點擊
                 await interaction.response.edit_message(
                     content=f"🗑️ **帳目已成功徹底刪除！**\n📌 曾被刪除項目：ID:{self.target_id} │ {self.t_desc} ({self.t_amount}元) 由 {self.t_payer} 付款。", 
                     view=None
@@ -214,9 +208,7 @@ class DeleteConfirmView(View):
         await interaction.response.edit_message(content="🔄 已取消刪除操作，帳目完好無損。", view=None)
 
 
-# ==========================================
-# 升級版：具備資料校驗功能的刪除彈出視窗
-# ==========================================
+# 具備資料校驗功能的刪除彈出視窗
 class DeleteRecordModal(Modal, title="🗑️ 安全刪除帳目紀錄"):
     id_to_del = TextInput(
         label="📌 請輸入要刪除的交易 ID", 
@@ -247,13 +239,13 @@ class DeleteRecordModal(Modal, title="🗑️ 安全刪除帳目紀錄"):
                 await interaction.response.send_message(f"🔍 找不到 ID 為 `{target_id}` 的帳目，可能已被刪除！", ephemeral=True)
                 return
                 
-            # 3. 擷取目標資訊，用於渲染二次確認介面
+            # 3. 擷取目標資訊
             t_desc = target_transaction.get("desc", "未知品項")
             t_amount = target_transaction.get("amount", 0)
             t_payer = target_transaction.get("payer", "未知付款人")
             t_time = target_transaction.get("time", "")
             
-            # 4. 渲染極具警示效果的二次確認 UI 訊息小卡（設定 ephemeral=True 確保隱私安全）
+            # 4. 渲染二次確認警告介面
             warning_content = (
                 f"⚠️ **【安全刪除確認】您正在嘗試刪除以下帳目紀錄：**\n"
                 f"─" * 20 + f"\n"
@@ -265,7 +257,6 @@ class DeleteRecordModal(Modal, title="🗑️ 安全刪除帳目紀錄"):
                 f"🚨 **警告**：刪除後將重新引發財務連帶關係變動，請確認是否繼續？"
             )
             
-            # 產生帶有安全按鈕的 View
             confirm_view = DeleteConfirmView(
                 target_id=target_id, 
                 t_desc=t_desc, 
@@ -274,7 +265,6 @@ class DeleteRecordModal(Modal, title="🗑️ 安全刪除帳目紀錄"):
                 original_user=interaction.user
             )
             
-            # 發送確認小卡
             await interaction.response.send_message(content=warning_content, view=confirm_view, ephemeral=True)
             
         except Exception as e:
@@ -300,15 +290,11 @@ class MainMenuView(View):
             await interaction.response.send_message("📭 目前沒紀錄", ephemeral=True)
             return
 
-        # ==========================================
-        # 1. 處理時間與計算相對時間的輔助函式
-        # ==========================================
         tw_tz = timezone(timedelta(hours=8))
         now = datetime.now(tw_tz)
         
         def get_relative_time(time_str):
             try:
-                # 解析紀錄中的時間字串
                 t_time = datetime.strptime(time_str, "%Y/%m/%d %H:%M").replace(tzinfo=tw_tz)
                 diff = now - t_time
                 
@@ -323,9 +309,7 @@ class MainMenuView(View):
             except:
                 return ""
 
-        # ==========================================
-        # 2. 時間維度統計（計算本週累計消費）
-        # ==========================================
+        # 時間維度統計（計算本週累計消費）
         week_count = 0
         week_total = 0.0
         one_week_ago = now - timedelta(days=7)
@@ -338,13 +322,10 @@ class MainMenuView(View):
                     week_total += float(t['amount'])
             except: pass
 
-        # ==========================================
-        # 3. 渲染輸出介面（加入分頁概念：預設只顯示最新的 5 筆）
-        # ==========================================
+        # 渲染輸出介面（加入分頁概念：預設只顯示最新的 5 筆）
         msg = f"📊 **【時間維度摘要】**\n📅 過去 7 天內累計記帳：`{week_count}` 筆 │ 總金額：`{round(week_total, 1)}` 元\n"
         msg += "─" * 15 + "\n📜 **最新交易清單 (僅顯示最新 5 筆)：**\n"
         
-        # 倒序排列（讓最新建立的帳目排在最上面）
         latest_ts = list(reversed(ts))[:5]
         
         for t in latest_ts:
@@ -354,7 +335,6 @@ class MainMenuView(View):
             msg += f"\n🔹 **ID:{t['id']}** │ 🕒 {time_display} │ 🏷️ **{t['desc']}**\n"
             msg += f"👤 Payer: `{t['payer']}` (付 {t['amount']} 元)\n"
             
-            # 優化債務人顯示
             for name, amt in t.get("splits", {}).items():
                 if str(name) != str(t['payer']): 
                     msg += f"   └─ 👤 {name} 欠 {amt} 元\n"
@@ -372,31 +352,22 @@ class MainMenuView(View):
                 await interaction.response.send_message("🎉 目前清空狀態，沒有任何記帳紀錄！", ephemeral=True)
                 return
             
-            # ==========================================
-            # 核心演算法：合併同債務人與債權人的所有金額
-            # ==========================================
-            # 結構會長這樣：{(debtor, payer): total_amount}
+            # 合併相同債務人與債權人的所有金額
             consolidated_debts = {}
             
             for t in ts:
                 payer = t['payer']
                 for debtor, amt in t.get("splits", {}).items():
                     if str(debtor) != str(payer):
-                        # 建立唯一的 (欠錢人, 收錢人) 鑰匙
                         key = (str(debtor), str(payer))
-                        # 如果已經存在，就累加金額；不存在就給初始值
                         consolidated_debts[key] = consolidated_debts.get(key, 0.0) + float(amt)
             
-            # ==========================================
             # UI 渲染：發送合併後的結果
-            # ==========================================
             debt_outputs = []
             
             for (debtor, payer), total_amt in consolidated_debts.items():
-                # 四捨五入到小數點後第一位或整數（依據你的顯示習慣，這裡維持四捨五入）
                 total_amt = round(total_amt, 2)
                 
-                # 跳過金額為 0 的無效債務
                 if total_amt <= 0:
                     continue
                     
@@ -404,26 +375,22 @@ class MainMenuView(View):
                 content = f"👤 **{debtor}** 總共欠 **{payer}** 💰 **{total_amt}元**"
                 
                 if payer_link:
-                    # 這裡會帶入合併後的總金額總數！
                     view = SettleLinkView(debtor_name=debtor, payer_name=payer, amount=total_amt, link=payer_link)
                     debt_outputs.append((content, view))
                 else:
                     content += "\n*(⚠️ 債權人未綁定 LINE Pay 轉帳連結，無法顯示按鈕)*"
                     debt_outputs.append((content, None))
             
-            # 檢查最後有沒有實質債務
             if not debt_outputs:
                 await interaction.response.send_message("🎉 目前所有債務已兩清，沒有產生實質債務關係！", ephemeral=True)
                 return
                 
-            # 第一筆用 response 發送
             first_content, first_view = debt_outputs[0]
             if first_view:
                 await interaction.response.send_message(f"💰 **【合併結算】目前的總債務關係：**\n\n{first_content}", view=first_view, ephemeral=True)
             else:
                 await interaction.response.send_message(f"💰 **【合併結算】目前的總債務關係：**\n\n{first_content}", ephemeral=True)
                 
-            # 第二筆以上才用 followup 發送
             if len(debt_outputs) > 1:
                 for content, view in debt_outputs[1:]:
                     if view:
@@ -440,6 +407,7 @@ class MainMenuView(View):
 
     @discord.ui.button(label="🗑️ 刪除紀錄", style=discord.ButtonStyle.red)
     async def del_btn(self, interaction: discord.Interaction, button: Button):
+        # 呼叫已經重構、安全防護滿點的 DeleteRecordModal
         await interaction.response.send_modal(DeleteRecordModal())
 
 # =========================
@@ -461,11 +429,10 @@ async def on_message(message):
     if message.content == "!menu":
         await message.channel.send("🏮 **記帳助手主選單**\n點擊下方按鈕進行操作：", view=MainMenuView())
         
-    # 指令二：綁定個人的 Line Pay 連結 (強效防呆重構版)
+    # 指令二：綁定個人的 Line Pay 連結
     if message.content.startswith("!setpay "):
         raw_text = message.content.replace("!setpay ", "").strip()
         
-        # 自動從輸入的段落中，精準過濾出包含 line 轉帳的 URL 標籤
         link = None
         for word in raw_text.split():
             if "line.me/" in word:
